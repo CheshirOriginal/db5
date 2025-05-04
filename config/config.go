@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"log"
 	"os"
 
@@ -29,10 +30,13 @@ func LoadConfig() Config {
 		DBName: os.Getenv("DB_NAME"),
 	}
 
-	// Простейшая проверка
 	if cfg.DBUser == "" || cfg.DBPass == "" {
 		log.Fatal("DB_USER или DB_PASS не заданы в .env")
 	}
 
 	return cfg
+}
+
+func (c Config) GetDSN() string {
+	return fmt.Sprintf("postgres://%s:%s@%s:%s/%s?sslmode=disable", c.DBUser, c.DBPass, c.DBHost, c.DBPort, c.DBName)
 }
