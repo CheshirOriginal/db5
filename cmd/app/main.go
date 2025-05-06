@@ -3,26 +3,37 @@ package main
 import (
 	"db5/config"
 	"db5/internal/db"
-	"fmt"
+	"db5/internal/types"
 	"log"
 )
 
 func main() {
 	conf := config.LoadConfig()
 
+	var store db.Store
 	var Database db.DB
+	store = &Database
 
-	err := Database.Connect(conf)
+	err := store.Connect(conf)
 	if err != nil {
+
 		log.Fatalf("failed to connect to DB: %v", err)
 	}
 
-	defer Database.Close()
+	defer store.Close()
 
-	Cashiers, err := Database.GetAllReceipt()
+	var receipt types.ReceiptInfoRequest
+	receipt.TellerID = 1
+	receipt.Products = append(receipt.Products, types.ReceiptProductInfo{ProductID: 1, Quantity: 2, Price: 700, Amount: 1400})
+	err = store.CreateNewReceipt(receipt)
 	if err != nil {
-		log.Fatalf("failed to get products: %v", err)
+		log.Fatalf("failed to create new receipt: %v", err)
 	}
 
-	fmt.Println(Cashiers)
+	//result, err := store.GetTellerInfo()
+	//if err != nil {
+	//	log.Fatalf("failed to get product info: %v", err)
+	//}
+	//fmt.Println(result)
+
 }
