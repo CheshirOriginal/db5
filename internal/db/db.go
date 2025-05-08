@@ -17,6 +17,10 @@ type Store interface {
 	GetProductInfo() ([]types.ProductInfoResponse, error)
 	GetTellerInfo() ([]types.TellerInfoResponse, error)
 	CreateNewReceipt(receiptInfo types.ReceiptInfoRequest) error
+	GetDepartmentInfo() ([]types.DepartmentInfoResponse, error)
+	CreateNewEmployee(employeeInfo types.EmployeeInfoCreateRequest) error
+	GetEmployeeInfo() ([]types.EmployeeInfoResponse, error)
+	DeleteEmployee(employeeInfo types.EmployeeInfoDeleteRequest) error
 }
 
 type DB struct {
@@ -78,7 +82,7 @@ func (db *DB) GetTellerInfo() ([]types.TellerInfoResponse, error) {
 	tellers := make([]types.TellerInfoResponse, len(result))
 
 	for i := range result {
-		tellers[i] = result[i].ToTellerInfoRequest()
+		tellers[i] = result[i].TellerInfoResponse()
 	}
 
 	return tellers, nil
@@ -102,6 +106,87 @@ func (db *DB) CreateNewReceipt(receiptInfo types.ReceiptInfoRequest) error {
 		}
 	}
 	return tx.Commit()
+}
+
+func (db *DB) GetDepartmentInfo() ([]types.DepartmentInfoResponse, error) {
+	result, err := db.getDepartment()
+	if err != nil {
+		return nil, fmt.Errorf("GetDepartmentInfo: %v", err)
+	}
+	departments := make([]types.DepartmentInfoResponse, len(result))
+	for i := range result {
+		departments[i] = result[i].ToDepartmentInfoResponse()
+	}
+	return departments, nil
+}
+
+func (db *DB) CreateNewEmployee(employeeInfo types.EmployeeInfoCreateRequest) error {
+	_, err := db.db.Exec("insert into Employee (first_name, last_name, middle_name, position, salary, department_id) values ($1, $2, $3, $4, $5, $6)",
+		employeeInfo.FirstName, employeeInfo.LastName, employeeInfo.MiddleName, employeeInfo.Position, employeeInfo.Salary, employeeInfo.DepartmentID)
+	if err != nil {
+		return fmt.Errorf("CreateNewEmployee: %v", err)
+	}
+	return nil
+}
+
+func (db *DB) GetEmployeeInfo() ([]types.EmployeeInfoResponse, error) {
+	query := `
+	select 
+	    e.id,
+	    e.first_name,
+	    e.last_name,
+	    e.middle_name,
+	    e.position,
+	    e.salary,
+	    d.name
+    from Employee as e
+    left join Department as d on e.department_id = d.id`
+	var employees []types.EmployeeInfoResponse
+	rows, err := db.db.Query(query)
+	if err != nil {
+		return nil, fmt.Errorf("GetEmployeeInfo: %v", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var employee types.EmployeeInfoResponse
+		if err := rows.Scan(&employee.ID, &employee.FirstName, &employee.LastName, &employee.MiddleName, &employee.Position, &employee.Salary, &employee.Department); err != nil {
+			return nil, fmt.Errorf("GetEmployeeInfo: %v", err)
+		}
+		employees = append(employees, employee)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("GetEmployeeInfo: %v", err)
+	}
+	return employees, nil
+}
+
+func (db *DB) DeleteEmployee(employeeInfo types.EmployeeInfoDeleteRequest) error {
+	_, err := db.db.Exec("delete from Employee where id = $1", employeeInfo.ID)
+	if err != nil {
+		return fmt.Errorf("DeleteEmployee: %v", err)
+	}
+	return nil
+}
+
+func (db *DB) getDepartment() ([]types.Department, error) {
+	var departments []types.Department
+
+	rows, err := db.db.Query("select id, name, location, employee_count from Department")
+	if err != nil {
+		return nil, fmt.Errorf("getDepartment: %v", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var department types.Department
+		if err := rows.Scan(&department.ID, &department.Name, &department.Location, &department.EmployeeCount); err != nil {
+			return nil, fmt.Errorf("getDepartment: %v", err)
+		}
+		departments = append(departments, department)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("getDepartment: %v", err)
+	}
+	return departments, nil
 }
 
 func (db *DB) getEmployeeByPosition(position string) ([]types.Employee, error) {
@@ -135,7 +220,7 @@ func (db *DB) insertReceipt(tx *sql.Tx, receipt types.ReceiptInfoRequest) (int64
 	return receiptID, err
 }
 
-func (db *DB) insertReceiptProduct(tx *sql.Tx, receiptProduct types.ReceiptProductInfo, receiptID int64) error {
+func (db *DB) insertReceiptProduct(tx *sql.Tx, receiptProduct types.ReceiptProductInfoRequest, receiptID int64) error {
 	_, err := tx.Exec("insert into Receipt_Product (receipt_id, product_id, quantity, amount, price_at_purchase) values ($1, $2, $3, $4, $5)",
 		receiptID, receiptProduct.ProductID, receiptProduct.Quantity, receiptProduct.Amount, receiptProduct.Price)
 	return err

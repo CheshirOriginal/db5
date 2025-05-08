@@ -9,12 +9,26 @@ type Employee struct {
 	Salary     float64
 }
 
-func (e *Employee) ToTellerInfoRequest() TellerInfoResponse {
+func (e *Employee) TellerInfoResponse() TellerInfoResponse {
 	return TellerInfoResponse{
 		ID:         e.ID,
 		FirstName:  e.FirstName,
 		LastName:   e.LastName,
 		MiddleName: e.MiddleName,
+	}
+}
+
+type Department struct {
+	ID            int64
+	Name          string
+	Location      string
+	EmployeeCount int
+}
+
+func (d *Department) ToDepartmentInfoResponse() DepartmentInfoResponse {
+	return DepartmentInfoResponse{
+		ID:   d.ID,
+		Name: d.Name,
 	}
 }
 
