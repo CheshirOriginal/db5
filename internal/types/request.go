@@ -25,3 +25,14 @@ type EmployeeInfoCreateRequest struct {
 type EmployeeInfoDeleteRequest struct {
 	ID int64 `json:"employee_id"`
 }
+
+type SupplierOrderInfoRequest struct {
+	SupplierID         int64                          `json:"supplier_id"`
+	SupplierOrderItems []SupplierOrderItemInfoRequest `json:"supplier_order_items"`
+}
+
+type SupplierOrderItemInfoRequest struct {
+	Price     float64 `json:"price"`
+	ProductID int64   `json:"product_id"`
+	Quantity  int64   `json:"quantity"`
+}

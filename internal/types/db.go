@@ -32,13 +32,21 @@ func (d *Department) ToDepartmentInfoResponse() DepartmentInfoResponse {
 	}
 }
 
-//type Product struct {
-//	ID       int64
-//	Name     string
-//	Price    float64
-//	Category string
-//	Quantity int
-//}
+type Product struct {
+	ID       int64
+	Name     string
+	Price    float64
+	Category string
+	Quantity int
+}
+
+func (p *Product) ToProductInfoBySupplierResponse() ProductInfoBySupplierResponse {
+	return ProductInfoBySupplierResponse{
+		ID:   p.ID,
+		Name: p.Name,
+	}
+}
+
 //type SupplierInfo struct {
 //	ID   int64
 //	Name string

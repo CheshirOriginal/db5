@@ -5,7 +5,7 @@ import (
 	"db5/config"
 	"db5/internal/types"
 	"fmt"
-	_ "sync"
+	"sync"
 
 	_ "github.com/lib/pq"
 )
@@ -21,6 +21,12 @@ type Store interface {
 	CreateNewEmployee(employeeInfo types.EmployeeInfoCreateRequest) error
 	GetEmployeeInfo() ([]types.EmployeeInfoResponse, error)
 	DeleteEmployee(employeeInfo types.EmployeeInfoDeleteRequest) error
+	GetSupplierInfo() ([]types.SupplierInfoResponse, error)
+	GetProductInfoBySupplier(supplierID int64) ([]types.ProductInfoBySupplierResponse, error)
+	CreateNewSupplierOrder(supplierOrderInfo types.SupplierOrderInfoRequest) error
+	GetFullProductInfo() ([]types.FullProductInfoResponse, error)
+	GetFullReceiptInfo() ([]types.FullReceiptInfoResponse, error)
+	GetFullSupplierOrderInfo() ([]types.FullSupplierOrderInfoResponse, error)
 }
 
 type DB struct {
@@ -168,6 +174,303 @@ func (db *DB) DeleteEmployee(employeeInfo types.EmployeeInfoDeleteRequest) error
 	return nil
 }
 
+func (db *DB) GetSupplierInfo() ([]types.SupplierInfoResponse, error) {
+	var suppliers []types.SupplierInfoResponse
+	rows, err := db.db.Query("select id, name from Supplier")
+	if err != nil {
+		return nil, fmt.Errorf("GetSupplierInfo: %v", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var supplier types.SupplierInfoResponse
+		if err := rows.Scan(&supplier.ID, &supplier.Name); err != nil {
+			return nil, fmt.Errorf("GetSupplierInfo: %v", err)
+		}
+		suppliers = append(suppliers, supplier)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("GetSupplierInfo: %v", err)
+	}
+	return suppliers, nil
+}
+
+func (db *DB) GetProductInfoBySupplier(supplierID int64) ([]types.ProductInfoBySupplierResponse, error) {
+	var query = `
+	select DISTINCT
+	p.name,
+	p.id
+	from Product as p
+	join Supplier_Order_Items as soi on p.id = soi.product_id
+	join Supplier_Order as so on so.id = soi.order_id
+	where so.supplier_id = $1`
+
+	var products []types.ProductInfoBySupplierResponse
+	rows, err := db.db.Query(query, supplierID)
+	if err != nil {
+		return nil, fmt.Errorf("GetProductInfoBySupplier: %v", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var product types.ProductInfoBySupplierResponse
+		if err := rows.Scan(&product.Name, &product.ID); err != nil {
+			return nil, fmt.Errorf("GetProductInfoBySupplier: %v", err)
+		}
+		products = append(products, product)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("GetProductInfoBySupplier: %v", err)
+	}
+	return products, nil
+}
+
+func (db *DB) CreateNewSupplierOrder(supplierOrderInfo types.SupplierOrderInfoRequest) error {
+	tx, err := db.db.Begin()
+	if err != nil {
+		return fmt.Errorf("CreateNewSupplierOrder: %v", err)
+	}
+	defer tx.Rollback()
+
+	supplierOrderID, err := db.insertSupplierOrder(tx, supplierOrderInfo)
+	if err != nil {
+		return fmt.Errorf("CreateNewSupplierOrder: %v", err)
+	}
+	for _, item := range supplierOrderInfo.SupplierOrderItems {
+		if err := db.insertSupplierOrderItem(tx, item, supplierOrderID); err != nil {
+			return fmt.Errorf("CreateNewSupplierOrderItem: %v", err)
+		}
+	}
+	return tx.Commit()
+}
+
+func (db *DB) GetFullProductInfo() ([]types.FullProductInfoResponse, error) {
+	query := `
+	select
+	p.name,
+	p.price,
+	p.category,
+	p.quantity_in_stock,
+	d.name
+	from Product as p
+	join Department as d on p.department_id = d.id`
+	var Products []types.FullProductInfoResponse
+	rows, err := db.db.Query(query)
+	if err != nil {
+		return nil, fmt.Errorf("GetFullProductInfo: %v", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var product types.FullProductInfoResponse
+		if err := rows.Scan(&product.Name, &product.Price, &product.Category, &product.Quantity, &product.DepartmentName); err != nil {
+			return nil, fmt.Errorf("GetFullProductInfo: %v", err)
+		}
+		Products = append(Products, product)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("GetFullProductInfo: %v", err)
+	}
+	return Products, nil
+}
+
+func (db *DB) GetFullReceiptInfo() ([]types.FullReceiptInfoResponse, error) {
+	query := `
+	select
+	e.first_name,
+	e.last_name,
+	e.middle_name,
+	r.id,
+	r.number,
+	r.date_time,
+	r.total_amount,
+	lc.number
+	from Receipt as r
+	join Employee as e on e.id = r.employee_id
+	join Loyalty_Card as lc on lc.id = r.loyalty_card_id
+	order by r.id
+	`
+	var receipts []types.FullReceiptInfoResponse
+
+	rows, err := db.db.Query(query)
+	if err != nil {
+		return nil, fmt.Errorf("GetFullReceiptInfo: %v", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var receipt types.FullReceiptInfoResponse
+		if err := rows.Scan(&receipt.TellerFirstName, &receipt.TellerLastName, &receipt.TellerMiddleName, &receipt.ID, &receipt.Number, &receipt.Date, &receipt.Total, &receipt.LoyaltyCardNumber); err != nil {
+			return nil, fmt.Errorf("GetFullReceiptInfo: %v", err)
+		}
+		receipts = append(receipts, receipt)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("GetFullReceiptInfo: %v", err)
+	}
+
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	errChan := make(chan error, len(receipts))
+
+	for i := range receipts {
+		wg.Add(1)
+
+		go func(i int) {
+			defer wg.Done()
+
+			products, err := db.getReceiptProductByProductID(receipts[i].ID)
+			if err != nil {
+				errChan <- fmt.Errorf("GetFullReceiptInfo: %v", err)
+				return
+			}
+			mu.Lock()
+			receipts[i].Products = products
+			mu.Unlock()
+		}(i)
+	}
+
+	wg.Wait()
+	close(errChan)
+
+	if len(errChan) > 0 {
+		return nil, <-errChan
+	}
+
+	return receipts, nil
+}
+
+func (db *DB) GetFullSupplierOrderInfo() ([]types.FullSupplierOrderInfoResponse, error) {
+	query := `
+	select
+	so.order_date,
+	so.date_of_receipt,
+	so.id,
+	so.total_amount,
+	s.name
+ 	from Supplier_Order as so
+ 	join Supplier as s on so.supplier_id = s.id
+ 	order by so.id`
+	var supplierOrders []types.FullSupplierOrderInfoResponse
+	var nt sql.NullTime
+
+	rows, err := db.db.Query(query)
+	if err != nil {
+		return nil, fmt.Errorf("GetFullSupplierOrderInfo: %v", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var supplier types.FullSupplierOrderInfoResponse
+		if err := rows.Scan(&supplier.OrderDate, &nt, &supplier.ID, &supplier.Total, &supplier.SupplierName); err != nil {
+			return nil, fmt.Errorf("GetFullSupplierOrderInfo: %v", err)
+		}
+		if nt.Valid {
+			supplier.DateOfReceipt = nt.Time
+		}
+		supplierOrders = append(supplierOrders, supplier)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("GetFullSupplierOrderInfo: %v", err)
+	}
+
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	errChan := make(chan error, len(supplierOrders))
+
+	for i := range supplierOrders {
+		wg.Add(1)
+
+		go func(i int) {
+			defer wg.Done()
+
+			items, err := db.getSupplierOrderItemByOrderID(supplierOrders[i].ID)
+			if err != nil {
+				errChan <- fmt.Errorf("GetFullReceiptInfo: %v", err)
+				return
+			}
+			mu.Lock()
+			supplierOrders[i].SupplierOrderItems = items
+			mu.Unlock()
+		}(i)
+	}
+
+	wg.Wait()
+	close(errChan)
+
+	if len(errChan) > 0 {
+		return nil, <-errChan
+	}
+
+	return supplierOrders, nil
+}
+
+func (db *DB) getSupplierOrderItemByOrderID(orderID int64) ([]types.SupplierOrderItemResponse, error) {
+	var supplierOrderItems []types.SupplierOrderItemResponse
+	query := `
+		SELECT p.name, soi.quantity, soi.purchase_price
+		FROM Supplier_Order_Items as soi
+		JOIN Product as p ON soi.product_id = p.id
+		WHERE soi.order_id = $1
+	`
+
+	rows, err := db.db.Query(query, orderID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var supplierOrderItem types.SupplierOrderItemResponse
+		if err := rows.Scan(&supplierOrderItem.ProductName, &supplierOrderItem.Quantity, &supplierOrderItem.Price); err != nil {
+			return nil, err
+		}
+		supplierOrderItem.Amount = supplierOrderItem.Price * float64(supplierOrderItem.Quantity)
+		supplierOrderItems = append(supplierOrderItems, supplierOrderItem)
+	}
+
+	return supplierOrderItems, nil
+}
+
+func (db *DB) getReceiptProductByProductID(receiptID int64) ([]types.ReceiptProductResponse, error) {
+	var products []types.ReceiptProductResponse
+	query := `
+		SELECT p.name, rp.quantity, rp.amount, rp.price_at_purchase
+		FROM Receipt_Product as rp
+		JOIN Product as p ON rp.product_id = p.id
+		WHERE rp.receipt_id = $1
+	`
+
+	rows, err := db.db.Query(query, receiptID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var receiptProduct types.ReceiptProductResponse
+		if err := rows.Scan(&receiptProduct.Name, &receiptProduct.Quantity, &receiptProduct.Amount, &receiptProduct.Price); err != nil {
+			return nil, err
+		}
+		products = append(products, receiptProduct)
+	}
+
+	return products, nil
+}
+
+func (db *DB) insertSupplierOrder(tx *sql.Tx, supplierOrderInfo types.SupplierOrderInfoRequest) (int64, error) {
+	var supplierOrderID int64
+	err := tx.QueryRow("insert into Supplier_Order (total_amount, supplier_id) values ($1, $2) returning id",
+		0, supplierOrderInfo.SupplierID,
+	).Scan(&supplierOrderID)
+	if err != nil {
+		return 0, fmt.Errorf("insertSupplierOrder: %v", err)
+	}
+	return supplierOrderID, nil
+}
+
+func (db *DB) insertSupplierOrderItem(tx *sql.Tx, supplierOrderItem types.SupplierOrderItemInfoRequest, orderID int64) error {
+	_, err := tx.Exec("insert into Supplier_Order_Items (purchase_price, quantity, product_id, order_id) values ($1, $2, $3, $4)",
+		supplierOrderItem.Price, supplierOrderItem.Quantity, supplierOrderItem.ProductID, orderID)
+	return err
+}
+
 func (db *DB) getDepartment() ([]types.Department, error) {
 	var departments []types.Department
 
@@ -213,9 +516,17 @@ func (db *DB) getEmployeeByPosition(position string) ([]types.Employee, error) {
 
 func (db *DB) insertReceipt(tx *sql.Tx, receipt types.ReceiptInfoRequest) (int64, error) {
 	var receiptID int64
+	var loyaltyCardId any
+
+	if receipt.LoyaltyCardNumber == 0 {
+		loyaltyCardId = nil
+	} else {
+		loyaltyCardId = receipt.LoyaltyCardNumber
+	}
+
 	err := tx.QueryRow(
-		"insert into Receipt (total_amount, employee_id) values ($1, $2) returning id",
-		0, receipt.TellerID,
+		"insert into Receipt (total_amount, employee_id, loyalty_card_id) values ($1, $2, $3) returning id",
+		0, receipt.TellerID, loyaltyCardId,
 	).Scan(&receiptID)
 	return receiptID, err
 }
@@ -225,180 +536,3 @@ func (db *DB) insertReceiptProduct(tx *sql.Tx, receiptProduct types.ReceiptProdu
 		receiptID, receiptProduct.ProductID, receiptProduct.Quantity, receiptProduct.Amount, receiptProduct.Price)
 	return err
 }
-
-// GetAllProduct переработать: подстроить под интерфейс, возвращать будет джоин данные
-//func (db *DB) GetAllProduct() ([]types.Product, error) {
-//	var products []types.Product
-//
-//	rows, err := db.db.Query("select id, name, price, category, quantity_in_stock from Product")
-//	if err != nil {
-//		return nil, fmt.Errorf("GetAllProduct: %v", err)
-//	}
-//	defer rows.Close()
-//
-//	for rows.Next() {
-//		var product types.Product
-//		if err := rows.Scan(&product.ID, &product.Name, &product.Price, &product.Category, &product.Quantity); err != nil {
-//			return nil, fmt.Errorf("GetAllProduct: %v", err)
-//		}
-//		products = append(products, product)
-//	}
-//	if err := rows.Err(); err != nil {
-//		return nil, fmt.Errorf("GetAllProduct: %v", err)
-//	}
-//	return products, nil
-//}
-//
-//func (db *DB) GetAllSupplierInfo() ([]SupplierInfo, error) {
-//	var suppliersInfo []SupplierInfo
-//
-//	rows, err := db.db.Query("select id, name from Supplier")
-//	if err != nil {
-//		return nil, fmt.Errorf("GetAllSupplierInfo: %v", err)
-//	}
-//	defer rows.Close()
-//
-//	for rows.Next() {
-//		var supplierInfo SupplierInfo
-//		if err := rows.Scan(&supplierInfo.ID, &supplierInfo.Name); err != nil {
-//			return nil, fmt.Errorf("GetAllSupplierInfo: %v", err)
-//		}
-//		suppliersInfo = append(suppliersInfo, supplierInfo)
-//	}
-//	if err := rows.Err(); err != nil {
-//		return nil, fmt.Errorf("GetAllSupplierInfo: %v", err)
-//	}
-//	return suppliersInfo, nil
-//}
-//
-//func (db *DB) GetProductBySupplierID(supplierID int64) ([]Product, error) {
-//	var products []Product
-//
-//	query := `
-//    SELECT p.id, p.name, p.price, p.category, p.quantity_in_stock
-//    FROM Supplier s
-//    JOIN Supplier_Order so ON s.id = so.supplier_id
-//    JOIN Supplier_Order_Items soi ON so.id = soi.order_id
-//    JOIN Product p ON soi.product_id = p.id
-//    WHERE s.id = $1;
-//    `
-//
-//	rows, err := db.db.Query(query, supplierID)
-//	if err != nil {
-//		return nil, fmt.Errorf("GetProductBySupplierID: %v", err)
-//	}
-//	defer rows.Close()
-//
-//	for rows.Next() {
-//		var product Product
-//		if err := rows.Scan(&product.ID, &product.Name, &product.Price, &product.Category, &product.Quantity); err != nil {
-//			return nil, fmt.Errorf("GetProductBySupplierID: %v", err)
-//		}
-//		products = append(products, product)
-//	}
-//	if err := rows.Err(); err != nil {
-//		return nil, fmt.Errorf("GetProductBySupplierID: %v", err)
-//	}
-//	return products, nil
-//}
-//
-//func (db *DB) GetAllEmployee() ([]Employee, error) {
-//	var employees []Employee
-//
-//	rows, err := db.db.Query("select id, first_name, last_name, middle_name, position, salary from Employee")
-//	if err != nil {
-//		return nil, fmt.Errorf("GetAllEmployee: %v", err)
-//	}
-//	defer rows.Close()
-//
-//	for rows.Next() {
-//		var employee Employee
-//		if err := rows.Scan(&employee.ID, &employee.FirstName, &employee.LastName, &employee.MiddleName, &employee.Position, &employee.Salary); err != nil {
-//			return nil, fmt.Errorf("GetAllEmployee: %v", err)
-//		}
-//		employees = append(employees, employee)
-//	}
-//	if err := rows.Err(); err != nil {
-//		return nil, fmt.Errorf("GetAllEmployee: %v", err)
-//	}
-//	return employees, nil
-//}
-//
-//func (db *DB) GetAllReceipt() ([]Receipt, error) {
-//	var receipts []Receipt
-//
-//	rows, err := db.db.Query("select id, date_time, total_amount from Receipt")
-//	if err != nil {
-//		return nil, fmt.Errorf("GetAllReceipt: %v", err)
-//	}
-//	defer rows.Close()
-//
-//	for rows.Next() {
-//		var receipt Receipt
-//		if err := rows.Scan(&receipt.ID, &receipt.Date, &receipt.Total); err != nil {
-//			return nil, fmt.Errorf("GetAllReceipt: %v", err)
-//		}
-//
-//		receipts = append(receipts, receipt)
-//	}
-//	if err := rows.Err(); err != nil {
-//		return nil, fmt.Errorf("GetAllReceipt: %v", err)
-//	}
-//
-//	var wg sync.WaitGroup
-//	var mu sync.Mutex
-//	errChan := make(chan error, len(receipts))
-//
-//	for i := range receipts {
-//		wg.Add(1)
-//
-//		go func(i int) {
-//			defer wg.Done()
-//
-//			products, err := db.getReceiptProductByProductID(receipts[i].ID)
-//			if err != nil {
-//				errChan <- fmt.Errorf("GetAllReceipt: %v", err)
-//				return
-//			}
-//
-//			mu.Lock()
-//			receipts[i].ReceiptProducts = products
-//			mu.Unlock()
-//		}(i)
-//	}
-//
-//	wg.Wait()
-//	close(errChan)
-//
-//	if len(errChan) > 0 {
-//		return nil, <-errChan
-//	}
-//
-//	return receipts, nil
-//}
-//
-//func (db *DB) getReceiptProductByProductID(receiptID int64) ([]ReceiptProduct, error) {
-//	var products []ReceiptProduct
-//	query := `
-//		SELECT p.name, rp.quantity, rp.amount, rp.price_at_purchase
-//		FROM Receipt_Product as rp
-//		JOIN Product as p ON rp.product_id = p.id
-//		WHERE rp.receipt_id = $1
-//	`
-//
-//	rows, err := db.db.Query(query, receiptID)
-//	if err != nil {
-//		return nil, err
-//	}
-//	defer rows.Close()
-//
-//	for rows.Next() {
-//		var rp ReceiptProduct
-//		if err := rows.Scan(&rp.Name, &rp.Quantity, &rp.Amount, &rp.Price); err != nil {
-//			return nil, err
-//		}
-//		products = append(products, rp)
-//	}
-//
-//	return products, nil
-//}
