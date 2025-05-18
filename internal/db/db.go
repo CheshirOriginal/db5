@@ -45,6 +45,11 @@ func (db *DB) Connect(c config.Config) error {
 	}
 
 	db.db = database
+
+	db.db.SetMaxOpenConns(10)
+	db.db.SetMaxIdleConns(5)
+	db.db.SetConnMaxLifetime(time.Minute * 5)
+
 	fmt.Println("Connected!")
 
 	return nil
